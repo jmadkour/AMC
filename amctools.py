@@ -168,7 +168,7 @@ if section == "ETUDIANTS":
                 st.download_button(
                     label="📥 Télécharger la liste des étudiants au format CSV",
                     data=csv_data,
-                    file_name="liste_etudiants.csv",
+                    file_name="liste.csv",
                     mime="text/csv"
                 )
 
