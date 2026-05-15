@@ -68,124 +68,104 @@ def detect_delimiter(file_content):
 # Fonction de traitement pour le fichier CSV
 def process_csv2excel(xls_file, csv_file, add_notes=0):
     try:
-        # Lire le contenu du fichier CSV en mémoire
-        csv_content = csv_file.read()
-        # Détecter le délimiteur
-        delimiter = detect_delimiter(csv_content)
-        # Charger le fichier CSV avec le bon délimiteur
-        csv_data = pd.read_csv(io.StringIO(csv_content.decode('utf-8')), delimiter=delimiter, encoding='utf-8')
+        # ... [même code de lecture CSV jusqu'à la création de notes_etudiants] ...
         
-        # Renommer la colonne 'Mark' en 'Note' si elle existe
-        if 'Mark' in csv_data.columns:
-            csv_data = csv_data.rename(columns={'Mark': 'Note'})
-        
-        # Supprimer toutes les colonnes sauf 'A:Code' et 'Note'
-        csv_data = csv_data[['A:Code', 'Note']]
-        
-        # Nettoyer les données : supprimer les lignes où 'A:Code' == 'NONE'
-        anomalies = csv_data[csv_data['A:Code'] == 'NONE'].copy()
-        csv_clean = csv_data[csv_data['A:Code'] != 'NONE'].copy()
-
-        # Garder les valeurs de 'Note' sous forme de chaînes de caractères
-        csv_clean['Note'] = csv_clean['Note'].astype(str).str.replace('.', ',', regex=False)
-
-        # Ajouter des points aux notes si nécessaire (avec validation, limite maximale de 20)
-        if add_notes > 0:
-            # Remplacer ',' par '.' pour faire le calcul, puis remettre ',' après
-            csv_clean['Note'] = csv_clean['Note'].str.replace(',', '.', regex=False).astype(float)
-            csv_clean['Note'] = csv_clean['Note'].apply(lambda x: min(x + add_notes, 20))
-            csv_clean['Note'] = csv_clean['Note'].apply(lambda x: str(x).replace('.', ','))
-
-        # Vérifier si le fichier nettoyé est vide
-        if csv_clean.empty:
-            st.error("Aucune donnée valide après le nettoyage !")
-            return None, None
-
-        # Construire le dictionnaire Notes
-        notes_etudiants = {row['A:Code']: row['Note'] for _, row in csv_clean.iterrows()}
-        notes_etudiants = {int(k): v for k, v in notes_etudiants.items()}  # Code étudiant en entier
-
-        # Charger le fichier Excel
-        wb = load_workbook(filename=xls_file)
+        # Charger le fichier Excel EN PRÉSERVANT TOUT
+        wb = load_workbook(
+            filename=xls_file,
+            data_only=False,  # Garde les formules
+            keep_vba=True,    # Garde les macros si présentes
+            keep_links=True   # Garde les liens externes
+        )
         sheet = wb.active
 
-        # Trouver la colonne "Note" dans le fichier Excel
+        # Trouver la colonne "Note" (comparaison insensible aux espaces)
         cell_row = None
         cell_column = None
         for row in sheet.iter_rows():
             for cell in row:
-                if cell.value == 'Note':
+                if cell.value and str(cell.value).strip().lower() == 'note':
                     cell_row = cell.row
                     cell_column = cell.column
                     break
-            if cell_row is not None and cell_column is not None:
+            if cell_row is not None:
                 break
 
-        # Avertir si la colonne "Note" n'est pas trouvée
         if cell_row is None or cell_column is None:
-            st.warning("L'en-tête 'Note' n'a pas été trouvé dans le fichier Excel.")
+            st.error("❌ Colonne 'Note' introuvable. Vérifiez l'en-tête du fichier Excel.")
             return None, None
 
-        # Mettre à jour les notes dans le fichier Excel
-        for row in sheet.iter_rows(min_row=cell_row + 1, max_col=cell_column, values_only=False):
-            code_etudiant_cell = row[0]  # Colonne des codes d'étudiants
-            note_cell = row[cell_column - 1]  # Colonne des notes
+        # Mettre à jour les notes SANS toucher au reste
+        for row_idx in range(cell_row + 1, sheet.max_row + 1):
+            code_cell = sheet.cell(row=row_idx, column=1)  # Colonne A
+            note_cell = sheet.cell(row=row_idx, column=cell_column)
+            
+            code_etudiant = code_cell.value
+            
+            if code_etudiant is not None:
+                # Normaliser le code (chaîne, sans espaces)
+                code_str = str(code_etudiant).strip()
+                
+                if code_str in notes_etudiants:
+                    note_value = notes_etudiants[code_str]
+                    
+                    try:
+                        # Conversion propre avec gestion virgule/point
+                        if isinstance(note_value, str):
+                            note_float = float(note_value.replace(',', '.'))
+                        else:
+                            note_float = float(note_value)
+                        
+                        # Écriture de la valeur numérique
+                        note_cell.value = note_float
+                        # Formatage Excel (2 décimales)
+                        note_cell.number_format = '0.00'
+                        
+                    except (ValueError, TypeError) as e:
+                        st.warning(f"⚠️ Note invalide pour l'étudiant {code_str}: {note_value}")
+                        note_cell.value = note_value
 
-            if code_etudiant_cell.value in notes_etudiants:
-                note_value = notes_etudiants[code_etudiant_cell.value]
-
-                try:
-                    if ',' in note_value:
-                        # Convertir en float avec point décimal, mais formater Excel avec virgule
-                        note_cell.value = float(note_value.replace(',', '.'))
-                        note_cell.number_format = numbers.FORMAT_NUMBER_00  # Affichage 0,00
-                    else:
-                        note_cell.value = int(note_value)
-                except ValueError:
-                    # Si erreur, on laisse tel quel (ex: texte invalide)
-                    note_cell.value = note_value
-
-        # Enregistrer les modifications dans le fichier Excel
+        # Sauvegarder SANS écraser les dessins
         output = io.BytesIO()
         wb.save(output)
         wb.close()
-
-        # Réinitialiser le curseur du flux binaire
         output.seek(0)
 
         return output, len(anomalies)
 
     except Exception as e:
-        st.error(f"Erreur lors du traitement du fichier Excel : {str(e)}")
-        st.info("Assurez-vous que le fichier est bien formaté et contient les colonnes requises.")
+        st.error(f"❌ Erreur critique : {str(e)}")
+        import traceback
+        st.code(traceback.format_exc())
         return None, None
-
+        
 # Fonction de traitement pour le fichier CSV
 def process_csv(csv_file):
     try:
         # Lire le contenu du fichier CSV en mémoire
         csv_content = csv_file.read()
-
         # Détecter le délimiteur
         delimiter = detect_delimiter(csv_content)
-
         # Charger le fichier CSV avec le bon délimiteur
         csv_data = pd.read_csv(io.StringIO(csv_content.decode('utf-8')), delimiter=delimiter, encoding='utf-8')
-
+        
         # Renommer la colonne 'Mark' en 'Note' si elle existe
         if 'Mark' in csv_data.columns:
             csv_data = csv_data.rename(columns={'Mark': 'Note'})
-
+        
         # Supprimer toutes les colonnes sauf 'A:Code' et 'Note'
-        csv_data = csv_data[['A:Code', 'Note']]
-
-        # Nettoyer les données : supprimer les lignes où 'A:Code' == 'NONE'
+        if 'A:Code' not in csv_data.columns or 'Note' not in csv_data.columns:
+            st.error("Les colonnes nécessaires ('A:Code', 'Note') sont manquantes.")
+            return None, None
+        
         csv_nones = csv_data[csv_data['A:Code'] == 'NONE'].copy()
         csv_clean = csv_data[csv_data['A:Code'] != 'NONE'].copy()
 
-        # S'assurer que 'A:Code' est entier et 'Note' est entier ou décimal
-        csv_clean['A:Code'] = pd.to_numeric(csv_clean['A:Code'])
-        csv_clean['Note'] = pd.to_numeric(csv_clean['Note'])
+        # Convertir les codes étudiants en numérique
+        csv_clean['A:Code'] = pd.to_numeric(csv_clean['A:Code'], errors='coerce')
+
+        # Gérer les notes décimales avec virgule ou point
+        csv_clean['Note'] = csv_clean['Note'].astype(str).str.replace(',', '.').astype(float)
 
         # Vérifier si le fichier nettoyé est vide
         if csv_clean.empty:
@@ -196,7 +176,7 @@ def process_csv(csv_file):
 
     except Exception as e:
         st.error(f"Erreur lors du traitement du fichier CSV : {str(e)}")
-        st.error("Assurez-vous que le fichier est bien formaté et contient les colonnes requises.")
+        st.info("Assurez-vous que le fichier est bien formaté et contient les colonnes requises.")
         return None, None
 
 # ----------------- Interface utilisateur -----------------
