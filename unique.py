@@ -7,12 +7,10 @@ import csv
 from openpyxl.styles import numbers
 
 # =============================================================================
-# CONFIGURATION DE LA PAGE
+# CONFIGURATION
 # =============================================================================
 st.set_page_config(page_title="🛠️ Outils pour AMC", page_icon="🎓", layout="wide")
 st.title("🛠️ Outils pour AMC")
-
-# Sidebar pour les sections
 section = st.sidebar.radio(" ", ["ETUDIANTS", "STATISTIQUES", "NOTES"])
 
 # =============================================================================
@@ -30,20 +28,20 @@ def process_excel(file):
         )
         
         if header_index is None:
-            st.error("Les colonnes 'Code', 'Nom', 'Prénom' sont introuvables dans le fichier.")
+            st.error("Les colonnes 'Code', 'Nom', 'Prénom' sont introuvables.")
             return None, None
             
         xls.columns = xls.iloc[header_index]
         xls = xls.iloc[header_index + 1:].reset_index(drop=True)
         
         if xls.empty:
-            st.error("Aucune donnée valide après le traitement des lignes.")
+            st.error("Aucune donnée valide après le traitement.")
             return None, None
             
         required_columns = ['Nom', 'Prénom', 'Code']
         missing = [col for col in required_columns if col not in xls.columns]
         if missing:
-            st.error(f"Colonnes manquantes après traitement : {', '.join(missing)}")
+            st.error(f"Colonnes manquantes : {', '.join(missing)}")
             return None, None
             
         liste = xls.dropna(subset=['Nom', 'Prénom', 'Code'])
@@ -52,24 +50,20 @@ def process_excel(file):
         return xls, liste
         
     except Exception as e:
-        st.error(f"Erreur lors du traitement du fichier Excel : {str(e)}")
-        st.info("Assurez-vous que le fichier est bien formaté et contient les colonnes requises.")
+        st.error(f"Erreur Excel : {str(e)}")
         return None, None
 
 
 def detect_delimiter(file_content):
-    """Détecte le séparateur dans un fichier CSV"""
     sample = file_content.decode('utf-8', errors='ignore')
     try:
         dialect = csv.Sniffer().sniff(sample)
         return dialect.delimiter
     except csv.Error:
-        st.warning("Aucun délimiteur détecté. La virgule ',' sera utilisée par défaut.")
         return ','
 
 
 def process_csv(csv_file):
-    """Traite le fichier CSV pour l'analyse statistique"""
     try:
         csv_content = csv_file.read()
         delimiter = detect_delimiter(csv_content)
@@ -79,35 +73,32 @@ def process_csv(csv_file):
             csv_data = csv_data.rename(columns={'Mark': 'Note'})
             
         if 'A:Code' not in csv_data.columns or 'Note' not in csv_data.columns:
-            st.error("Les colonnes nécessaires ('A:Code', 'Note') sont manquantes.")
+            st.error("Colonnes 'A:Code' ou 'Note' manquantes dans le CSV.")
             return None, None
             
         csv_nones = csv_data[csv_data['A:Code'] == 'NONE'].copy()
         csv_clean = csv_data[csv_data['A:Code'] != 'NONE'].copy()
         
-        csv_clean['A:Code'] = pd.to_numeric(csv_clean['A:Code'], errors='coerce')
+        csv_clean['A:Code'] = csv_clean['A:Code'].astype(str).str.strip()
         csv_clean['Note'] = csv_clean['Note'].astype(str).str.replace(',', '.').astype(float)
         
         if csv_clean.empty:
-            st.error("Aucune donnée valide après le nettoyage !")
+            st.error("Aucune donnée valide.")
             return None, None
             
         return csv_clean, csv_nones
-        
     except Exception as e:
-        st.error(f"Erreur lors du traitement du fichier CSV : {str(e)}")
-        st.info("Assurez-vous que le fichier est bien formaté et contient les colonnes requises.")
+        st.error(f"Erreur CSV : {str(e)}")
         return None, None
 
 
 def process_csv2excel(xls_file, csv_file, add_notes=0):
     """
-    Fusionne les notes du CSV AMC dans le fichier Excel administration.
-    ✅ CORRECTION : Normalisation stricte des codes pour garantir la correspondance
-    quel que soit le format (texte, entier, float, espaces).
+    Fusionne les notes du CSV vers l'Excel.
+    ✅ CORRECTION : Normalisation stricte en STRING pour éviter les échecs int/float/text
     """
     try:
-        # === 1. LECTURE ET NETTOYAGE DU CSV ===
+        # 1. Lecture et nettoyage du CSV
         csv_content = csv_file.read()
         delimiter = detect_delimiter(csv_content)
         csv_data = pd.read_csv(io.StringIO(csv_content.decode('utf-8')), delimiter=delimiter, encoding='utf-8')
@@ -118,27 +109,25 @@ def process_csv2excel(xls_file, csv_file, add_notes=0):
         csv_data = csv_data[['A:Code', 'Note']]
         anomalies = csv_data[csv_data['A:Code'] == 'NONE'].copy()
         csv_clean = csv_data[csv_data['A:Code'] != 'NONE'].copy()
-        
-        # Gestion des notes (virgule/point)
+
+        # Nettoyage des notes
         csv_clean['Note'] = csv_clean['Note'].astype(str).str.replace('.', ',', regex=False)
-        
         if add_notes > 0:
             csv_clean['Note'] = csv_clean['Note'].str.replace(',', '.', regex=False).astype(float)
             csv_clean['Note'] = csv_clean['Note'].apply(lambda x: min(x + add_notes, 20))
             csv_clean['Note'] = csv_clean['Note'].apply(lambda x: str(x).replace('.', ','))
-            
+
         if csv_clean.empty:
-            st.error("Aucune donnée valide après le nettoyage !")
+            st.error("Aucune note valide à transférer !")
             return None, None
 
-        # === 2. CRÉATION DU DICTIONNAIRE DE NOTES ===
-        # On normalise TOUTES les clés en CHAÎNES DE CARACTÈRES sans espaces
+        # 2. Création du dictionnaire de correspondance (CLÉS EN STRING)
         notes_dict = {}
         for _, row in csv_clean.iterrows():
             code_key = str(row['A:Code']).strip()
             notes_dict[code_key] = row['Note']
 
-        # === 3. OUVERTURE ET PARCOURS DE L'EXCEL ===
+        # 3. Chargement et parcours de l'Excel
         wb = load_workbook(filename=xls_file)
         sheet = wb.active
         
@@ -159,42 +148,41 @@ def process_csv2excel(xls_file, csv_file, add_notes=0):
             if code_col and note_col:
                 break
                 
-        if code_col is None or note_col is None:
-            st.error("Les colonnes 'Code' et/ou 'Note' sont introuvables dans l'Excel.")
+        if not code_col or not note_col:
+            st.error("Impossible de trouver les colonnes 'Code' et 'Note' dans l'Excel.")
             wb.close()
             return None, None
 
-        # === 4. TRANSFERT DES NOTES ===
-        matched = 0
+        # 4. Transfert des notes avec correspondance STRING
+        matched_count = 0
         for row in sheet.iter_rows(min_row=header_row + 1, max_col=max(code_col, note_col)):
             code_cell = row[code_col - 1]
             note_cell = row[note_col - 1]
             
-            # Normalisation du code Excel exactement comme dans le dictionnaire
-            if code_cell.value is not None:
-                excel_code = str(code_cell.value).strip()
-                
-                if excel_code in notes_dict:
-                    note_val = notes_dict[excel_code]
-                    try:
-                        if ',' in str(note_val):
-                            note_cell.value = float(str(note_val).replace(',', '.'))
-                            note_cell.number_format = numbers.FORMAT_NUMBER_00
-                        else:
-                            note_cell.value = float(note_val) if '.' in str(note_val) else int(note_val)
-                        matched += 1
-                    except ValueError:
-                        note_cell.value = note_val  # Fallback si conversion échoue
-                        
+            # Conversion sécurisée en string pour la comparaison
+            excel_code = str(code_cell.value).strip() if code_cell.value else ""
+            
+            if excel_code in notes_dict:
+                note_val = notes_dict[excel_code]
+                try:
+                    # Écriture propre dans Excel
+                    if ',' in str(note_val):
+                        note_cell.value = float(str(note_val).replace(',', '.'))
+                        note_cell.number_format = numbers.FORMAT_NUMBER_00
+                    else:
+                        note_cell.value = float(note_val) if '.' in str(note_val) else int(note_val)
+                    matched_count += 1
+                except ValueError:
+                    note_cell.value = note_val  # Fallback si conversion échoue
+
         wb.close()
         
-        # Feedback
-        if matched == 0:
-            st.warning("⚠️ Aucune note n'a été transférée. Vérifiez la correspondance des codes.")
+        # 5. Feedback et sauvegarde
+        if matched_count == 0:
+            st.warning("⚠️ Aucune note transférée. Vérifiez que les codes correspondent exactement.")
         else:
-            st.success(f"✅ {matched} notes transférées avec succès.")
+            st.success(f"✅ {matched_count} notes transférées avec succès !")
             
-        # Sauvegarde
         output = io.BytesIO()
         wb = load_workbook(filename=xls_file)
         wb.save(output)
@@ -204,8 +192,9 @@ def process_csv2excel(xls_file, csv_file, add_notes=0):
         return output, len(anomalies)
 
     except Exception as e:
-        st.error(f"Erreur critique lors du traitement : {str(e)}")
+        st.error(f"Erreur critique : {str(e)}")
         return None, None
+
 
 # =============================================================================
 # INTERFACE UTILISATEUR
@@ -213,130 +202,101 @@ def process_csv2excel(xls_file, csv_file, add_notes=0):
 
 if section == "ETUDIANTS":
     st.header("👨‍ Liste des étudiants")
-    st.info("Pour générer la liste des étudiants au format CSV à charger dans Auto Multiple Choice, téléchargez le fichier Excel envoyé par l'administration.")
-
-    uploaded_excel_file = st.file_uploader(" ", type="xlsx", key="excel_uploader")
-
-    if uploaded_excel_file is not None:
-        with st.spinner("Traitement automatique du fichier Excel en cours..."):
-            xls, liste = process_excel(uploaded_excel_file)
-
+    st.info("Téléchargez le fichier Excel administration pour générer la liste CSV compatible AMC.")
+    
+    uploaded_excel = st.file_uploader(" ", type="xlsx", key="excel_uploader")
+    
+    if uploaded_excel is not None:
+        with st.spinner("Traitement en cours..."):
+            xls, liste = process_excel(uploaded_excel)
+            
             if xls is not None:
-                st.success(f"✅  Lecture du fichier Excel réussie !")
-                st.write("🔎 Aperçu de la base de données des étudiants:")
-                st.write(xls.head(10))
-                st.write("🔎 Aperçu de la liste des étudiants à fournir à Auto Multiple Choice:")
-                st.write(liste.head(10))
-                st.success(f"🔢 La liste contient {len(xls)} étudiants.")
+                st.success(f"✅ {len(liste)} étudiants trouvés.")
+                st.write("🔎 Aperçu des données brutes :")
+                st.dataframe(xls.head(), use_container_width=True)
                 
-                csv_data = liste.to_csv(index=False).encode('utf-8')
+                st.write("🔎 Format final pour AMC :")
+                st.dataframe(liste.head(), use_container_width=True)
+                
+                # ✅ BOUTON DE TÉLÉCHARGEMENT RESTAURÉ
+                csv_data = liste.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
                 st.download_button(
-                    label="📥 Télécharger la liste des étudiants au format CSV",
+                    label="📥 Télécharger la liste au format CSV",
                     data=csv_data,
-                    file_name="liste.csv",
-                    mime="text/csv"
+                    file_name="liste_etudiants_amc.csv",
+                    mime="text/csv",
+                    use_container_width=True
                 )
 
 elif section == "STATISTIQUES":
     st.header("📊 Statistiques des notes")
-    st.info("Pour avoir une idée sur la distribution statistique des notes, télécharger le fichier des notes calculées par Auto Multiple Choice au format CSV.")
+    st.info("Analysez la distribution des notes depuis le fichier CSV d'AMC.")
     
-    uploaded_csv_file = st.file_uploader(" ", type="csv", key="csv_uploader")
-
-    if uploaded_csv_file is not None:
-        with st.spinner("Intégration des notes aux étudiants..."):
-            csv_clean, csv_nones = process_csv(uploaded_csv_file)
-
+    uploaded_csv = st.file_uploader(" ", type="csv", key="csv_uploader_stats")
+    
+    if uploaded_csv is not None:
+        with st.spinner("Analyse en cours..."):
+            csv_clean, csv_nones = process_csv(uploaded_csv)
+            
             if csv_clean is not None:
-                # Calcul des effectifs
-                effectifs = csv_clean['Note'].value_counts().reset_index()
-                modalites = csv_clean['Note'].unique()
+                effectifs = csv_clean['Note'].value_counts().sort_index().reset_index()
                 effectifs.columns = ['Valeur', 'Effectif']
-
-                fig = px.bar(effectifs,
-                             x='Valeur',
-                             y='Effectif',
-                             title=" ",
-                             labels={'Valeur': 'Notes', 'Effectif': 'Effectifs'},
-                             text_auto=True
-                             )
-                fig.update_layout(title_font_size=20, xaxis_title_font=dict(size=14), yaxis_title_font=dict(size=14), showlegend=False)
-                fig.update_traces(textfont_size=14, textangle=0, textposition="outside", width=0.5)
-                fig.update_xaxes(tickmode='array', tickvals=list(range(21)), ticktext=[str(i) for i in range(21)])
-                fig.update_layout(width=800, height=600)
-                st.plotly_chart(fig)
-
-                st.info("Quelques statistiques des notes.")
+                
+                fig = px.bar(effectifs, x='Valeur', y='Effectif', text_auto=True)
+                fig.update_layout(xaxis=dict(tickmode='linear', tick0=0, dtick=1), height=500)
+                st.plotly_chart(fig, use_container_width=True)
+                
                 col1, col2, col3, col4 = st.columns(4)
-                with col1:
-                    st.metric("Présents", len(csv_clean) if csv_clean is not None else 0)
-                with col2:
-                    st.metric("Validés", (csv_clean['Note'] >= 10).sum() if csv_clean is not None else 0)
-                with col3:
-                    st.metric("Taux de réussite (%)", round(((csv_clean['Note'] >= 10).sum() / len(csv_clean)) * 100, 2) if csv_clean is not None else 0)
-                with col4:
-                    st.metric("Mal identifiés", len(csv_nones) if csv_nones is not None else 0)
-
-                ajout_points = st.slider("Ajouter des points", min_value=0.0, max_value=5.0, value=0.0, step=0.5)
-
+                col1.metric("Présents", len(csv_clean))
+                col2.metric("Validés (≥10)", (csv_clean['Note'] >= 10).sum())
+                col3.metric("Taux réussite", f"{round(((csv_clean['Note'] >= 10).sum() / len(csv_clean)) * 100, 1)}%")
+                col4.metric("Mal identifiés", len(csv_nones) if csv_nones is not None else 0)
+                
+                ajout_points = st.slider("Ajouter des points", 0.0, 5.0, 0.0, 0.5)
                 if ajout_points > 0:
                     csv_plus = csv_clean.copy()
-                    st.info("Simulation de la distribution des notes et du taux de réussite après ajout de points.")
                     csv_plus['Note'] = csv_plus['Note'].apply(lambda x: min(x + ajout_points, 20))
-                    
-                    effectifs_plus = csv_plus['Note'].value_counts().reset_index()
+                    effectifs_plus = csv_plus['Note'].value_counts().sort_index().reset_index()
                     effectifs_plus.columns = ['Valeur', 'Effectif']
                     
-                    fig_plus = px.bar(effectifs_plus, x='Valeur', y='Effectif', title=" ", labels={'Valeur': 'Notes', 'Effectif': 'Effectifs'}, text_auto=True)
-                    fig_plus.update_layout(title_font_size=20, xaxis_title_font=dict(size=14), yaxis_title_font=dict(size=14), showlegend=False)
-                    fig_plus.update_traces(textfont_size=14, textangle=0, textposition="outside", width=0.5)
-                    fig_plus.update_xaxes(tickmode='array', tickvals=list(range(21)), ticktext=[str(i) for i in range(21)])
-                    fig_plus.update_layout(width=800, height=600)
+                    fig_plus = px.bar(effectifs_plus, x='Valeur', y='Effectif', text_auto=True)
+                    fig_plus.update_layout(xaxis=dict(tickmode='linear', tick0=0, dtick=1), height=500)
+                    st.plotly_chart(fig_plus, use_container_width=True)
                     
-                    col5, col6, col7, col8 = st.columns(4)
-                    with col5:
-                        st.metric("Présents", len(csv_plus) if csv_plus is not None else 0)
-                    with col6:
-                        st.metric("Validés", (csv_plus['Note'] >= 10).sum() if csv_plus is not None else 0)
-                    with col7:
-                        st.metric("Taux de réussite (%)", round(((csv_plus['Note'] >= 10).sum() / len(csv_plus)) * 100, 2) if csv_plus is not None else 0)
-                    with col8:
-                        st.metric("Mal identifiés", len(csv_nones) if csv_nones is not None else 0)
-                        
-                    st.plotly_chart(fig_plus)
+                    col5, col6, col7 = st.columns(3)
+                    col5.metric("Validés après ajout", (csv_plus['Note'] >= 10).sum())
+                    col6.metric("Nouveau taux", f"{round(((csv_plus['Note'] >= 10).sum() / len(csv_plus)) * 100, 1)}%")
+                    col7.metric("Gain", f"+{(csv_plus['Note'] >= 10).sum() - (csv_clean['Note'] >= 10).sum()}")
 
 elif section == "NOTES":
-    st.header("✍️ Traitement des notes")
-    st.info("Télécharger le fichier Excel envoyé par l'administration pour la saisie des notes.")
-    xls_file = st.file_uploader(" ", type="xlsx", key="excel_uploader2")
-
-    st.info("Télécharger le fichier des notes calculées par Auto Multiple Choice au format CSV.")
-    csv_file = st.file_uploader("", type="csv", key="csv_uploader")
+    st.header("✍️ Transfert des notes vers l'Excel administration")
     
+    col1, col2 = st.columns(2)
+    with col1:
+        st.info("📄 Fichier Excel administration (contient la colonne `Code`)")
+        xls_file = st.file_uploader(" ", type="xlsx", key="excel_notes")
+    with col2:
+        st.info("📄 Fichier CSV résultats AMC (contient `A:Code` et `Note`)")
+        csv_file = st.file_uploader(" ", type="csv", key="csv_notes")
+        
     if xls_file is not None and csv_file is not None:
-        with st.spinner("Traitement automatique du fichier Excel en cours..."):
-            csv_content = io.BytesIO(csv_file.getvalue())
-            xls_content = io.BytesIO(xls_file.getvalue())
-            
-            add_notes = st.number_input("Combien voulez-vous ajouter de points à l'ensemble des étudiants?", step=0.5)
-            processed_xls, nb_none = process_csv2excel(xls_content, csv_content, add_notes)
-
-        if processed_xls is not None:
-            wb = load_workbook(processed_xls)
-            output = io.BytesIO()
-            wb.save(output)
-            wb.close()
-            output.seek(0)
-            file_data = output.getvalue()
-
-            st.success("✅ Félicitations ! Les notes ont été saisies avec succès.")
-            file_name = st.text_input("Saisir le nom du fichier Excel de l'adminstration sans l'extension '.xlsx' puis valider.")
-            st.download_button(
-                label="📥 Télécharger le fichier Excel traité",
-                data=file_data,
-                file_name=file_name + ".xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-            
-        if nb_none is not None and nb_none > 0:
-            st.warning(f"Attention! {nb_none} étudiants ont été mal identifiés. Vérifiez leurs copies et saisissez leurs notes manuellement.")
+        add_notes = st.number_input("Points bonus à ajouter", min_value=0.0, max_value=5.0, value=0.0, step=0.5)
+        
+        if st.button("🚀 Lancer le transfert", type="primary", use_container_width=True):
+            with st.spinner("Fusion en cours..."):
+                xls_file.seek(0)
+                csv_file.seek(0)
+                
+                processed_xls, nb_none = process_csv2excel(xls_file, csv_file, add_notes)
+                
+                if processed_xls is not None:
+                    file_name = st.text_input("Nom du fichier de sortie (sans extension)", value="notes_traitees")
+                    st.download_button(
+                        label="📥 Télécharger le fichier Excel traité",
+                        data=processed_xls.getvalue(),
+                        file_name=f"{file_name.strip() or 'notes_traitees'}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True
+                    )
+                    if nb_none > 0:
+                        st.warning(f"⚠️ {nb_none} étudiant(s) non identifié(s) (Code = NONE) → à saisir manuellement.")
