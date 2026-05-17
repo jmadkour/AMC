@@ -4,327 +4,198 @@ from openpyxl import load_workbook
 import plotly.express as px
 import io
 import csv
-from openpyxl.styles import numbers
 
 # =============================================================================
-# CONFIGURATION DE PAGE
+# CONFIGURATION DE LA PAGE
 # =============================================================================
-st.set_page_config(
-    page_title="🛠️ Outils pour AMC", 
-    page_icon="🎓", 
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+st.set_page_config(page_title="🛠️ Outils AMC", layout="wide")
 
 # =============================================================================
-# FONCTIONS DE TRAITEMENT
+# FONCTIONS UTILITAIRES
 # =============================================================================
-
-def process_excel(file):
-    """Traite le fichier Excel administration pour extraire la liste des étudiants"""
-    try:
-        xls = pd.read_excel(file, header=None)
-        
-        header_index = next(
-            (idx for idx, row in xls.iterrows() if all(col in row.values for col in ['Code', 'Nom', 'Prénom'])),
-            None
-        )
-        
-        if header_index is None:
-            st.error("Les colonnes 'Code', 'Nom', 'Prénom' sont introuvables.")
-            return None, None
-        
-        xls.columns = xls.iloc[header_index]
-        xls = xls.iloc[header_index + 1:].reset_index(drop=True)
-        
-        if xls.empty:
-            st.error("Aucune donnée valide.")
-            return None, None
-        
-        required_columns = ['Nom', 'Prénom', 'Code']
-        missing = [col for col in required_columns if col not in xls.columns]
-        if missing:
-            st.error(f"Colonnes manquantes : {', '.join(missing)}")
-            return None, None
-        
-        liste = xls.dropna(subset=['Nom', 'Prénom', 'Code'])
-        liste['Name'] = liste['Code'].astype(str) + ' ' + liste['Nom'] + ' ' + liste['Prénom']
-        liste = liste[['Code', 'Name']].drop_duplicates()
-        return xls, liste
-        
-    except Exception as e:
-        st.error(f"Erreur Excel : {str(e)}")
-        return None, None
-
 
 def detect_delimiter(file_content):
-    sample = file_content.decode('utf-8', errors='ignore')[:10000]
+    sample = file_content.decode('utf-8', errors='ignore')
     try:
         dialect = csv.Sniffer().sniff(sample)
         return dialect.delimiter
     except csv.Error:
         return ','
 
-
-def process_csv(csv_file):
-    """Traite le CSV pour statistiques"""
-    try:
-        csv_content = csv_file.read()
-        delimiter = detect_delimiter(csv_content)
-        csv_data = pd.read_csv(io.StringIO(csv_content.decode('utf-8')), delimiter=delimiter, encoding='utf-8')
-        
-        if 'Mark' in csv_data.columns:
-            csv_data = csv_data.rename(columns={'Mark': 'Note'})
-        
-        if 'A:Code' not in csv_data.columns or 'Note' not in csv_data.columns:
-            st.error("Colonnes manquantes ('A:Code', 'Note').")
-            return None, None
-        
-        csv_nones = csv_data[csv_data['A:Code'] == 'NONE'].copy()
-        csv_clean = csv_data[csv_data['A:Code'] != 'NONE'].copy()
-        
-        csv_clean['A:Code'] = pd.to_numeric(csv_clean['A:Code'], errors='coerce')
-        csv_clean['Note'] = csv_clean['Note'].astype(str).str.replace(',', '.').astype(float)
-        
-        if csv_clean.empty:
-            st.error("Aucune donnée valide.")
-            return None, None
-        
-        return csv_clean, csv_nones
-        
-    except Exception as e:
-        st.error(f"Erreur CSV : {str(e)}")
-        return None, None
-
+# =============================================================================
+# FONCTION PRINCIPALE DE TRANSFERT (CORRIGÉE)
+# =============================================================================
 
 def process_csv2excel(xls_file, csv_file, add_notes=0):
     """
-    🎯 FONCTION CORRIGÉE : Fusionne les notes avec normalisation des codes
-    ✅ Résout le problème int/str pour les codes étudiants
+    Fusionne les notes du CSV AMC vers le fichier Excel.
+    CORRECTION : Conversion systématique des codes en CHAÎNE DE CARACTÈRES (String)
+    pour garantir la correspondance, quel que soit le format (int, float, text).
     """
     try:
-        # === TRAITEMENT CSV ===
+        # 1. Lecture et nettoyage du CSV
         csv_content = csv_file.read()
         delimiter = detect_delimiter(csv_content)
-        csv_data = pd.read_csv(io.StringIO(csv_content.decode('utf-8')), delimiter=delimiter, encoding='utf-8')
+        csv_data = pd.read_csv(io.StringIO(csv_content.decode('utf-8')), delimiter=delimiter)
         
+        # Renommer Mark en Note si nécessaire
         if 'Mark' in csv_data.columns:
             csv_data = csv_data.rename(columns={'Mark': 'Note'})
         
-        csv_data = csv_data[['A:Code', 'Note']]
-        anomalies = csv_data[csv_data['A:Code'] == 'NONE'].copy()
+        # Vérifier les colonnes requises
+        if 'A:Code' not in csv_data.columns or 'Note' not in csv_data.columns:
+            st.error("Le fichier CSV ne contient pas les colonnes 'A:Code' ou 'Note'.")
+            return None, 0
+
+        # Filtrer les lignes valides (Code != NONE)
         csv_clean = csv_data[csv_data['A:Code'] != 'NONE'].copy()
-        
-        csv_clean['Note'] = csv_clean['Note'].astype(str).str.replace('.', ',', regex=False)
-        
-        if add_notes > 0:
-            csv_clean['Note'] = csv_clean['Note'].str.replace(',', '.', regex=False).astype(float)
-            csv_clean['Note'] = csv_clean['Note'].apply(lambda x: min(x + add_notes, 20))
-            csv_clean['Note'] = csv_clean['Note'].apply(lambda x: str(x).replace('.', ','))
-        
-        if csv_clean.empty:
-            st.error("Aucune donnée valide !")
-            return None, None
+        anomalies_count = len(csv_data) - len(csv_clean)
 
-        # 🎯 CRÉATION DU DICTIONNAIRE DE NOTES - CODE NORMALISÉ EN ENTIER
-        notes_etudiants = {}
+        # --- CORRECTION MAJEURE ICI ---
+        # Création du dictionnaire de notes avec des CLÉS EN TEXTE (String)
+        # str(x).strip() enlève les espaces invisibles et convertit les nombres en texte
+        notes_dict = {}
         for _, row in csv_clean.iterrows():
-            try:
-                # Convertit en entier pour matcher avec l'Excel
-                code_key = int(float(str(row['A:Code']).strip()))
-                notes_etudiants[code_key] = row['Note']
-            except (ValueError, TypeError):
-                continue  # Ignore les codes invalides
+            code_raw = row['A:Code']
+            note_raw = row['Note']
+            
+            # Nettoyage du code
+            code_key = str(code_raw).strip()
+            
+            # Nettoyage de la note (gestion des virgules/points)
+            if isinstance(note_raw, str):
+                note_val = note_raw.replace(',', '.').strip()
+                try:
+                    note_val = float(note_val)
+                except:
+                    note_val = note_raw # Garder le texte si ce n'est pas un nombre
+            else:
+                note_val = note_raw
+            
+            # Ajouter les points bonus si demandé
+            if add_notes > 0 and isinstance(note_val, (int, float)):
+                note_val = min(note_val + add_notes, 20)
+            
+            notes_dict[code_key] = note_val
 
-        # === CHARGEMENT EXCEL ===
-        wb = load_workbook(filename=xls_file)
-        sheet = wb.active
-        
-        # 🔍 RECHERCHE DES COLONNES
-        code_column = None
-        note_column = None
-        header_row = None
-        
-        for i, row in enumerate(sheet.iter_rows(min_row=1, max_row=20), 1):
+        if not notes_dict:
+            st.warning("Aucune note valide trouvée dans le CSV.")
+            return None, 0
+
+        # 2. Ouverture du fichier Excel
+        wb = load_workbook(xls_file)
+        ws = wb.active
+
+        # 3. Recherche dynamique des colonnes "Code" et "Note"
+        code_col_idx = None
+        note_col_idx = None
+        header_row_idx = None
+
+        # On scanne les 15 premières lignes pour trouver les en-têtes
+        for row_idx, row in enumerate(ws.iter_rows(min_row=1, max_row=15), 1):
             for cell in row:
                 if cell.value:
-                    cell_val = str(cell.value).strip().lower()
-                    if cell_val == 'code' and code_column is None:
-                        code_column = cell.column
-                        header_row = i
-                    elif cell_val == 'note' and note_column is None:
-                        note_column = cell.column
-            if code_column and note_column:
+                    val = str(cell.value).strip().lower()
+                    if val == 'code' and code_col_idx is None:
+                        code_col_idx = cell.column
+                        header_row_idx = row_idx
+                    elif val == 'note' and note_col_idx is None:
+                        note_col_idx = cell.column
+                        header_row_idx = row_idx
+            
+            if code_col_idx and note_col_idx:
                 break
-        
-        if not code_column or not note_column:
-            st.error("Colonnes 'Code' ou 'Note' introuvables !")
-            wb.close()
-            return None, None
 
-        #  MISE À JOUR DES NOTES AVEC NORMALISATION
+        if not code_col_idx or not note_col_idx:
+            st.error("Impossible de trouver les colonnes 'Code' et 'Note' dans l'Excel.")
+            return None, 0
+
+        # 4. Transfert des notes
         matched_count = 0
-        unmatched_codes = []
-        updates_to_apply = []
-        
-        for row_idx, row in enumerate(sheet.iter_rows(min_row=header_row + 1, max_col=max(code_column, note_column)), header_row + 1):
-            code_cell = row[code_column - 1]
-            note_cell = row[note_column - 1]
-            code_raw = code_cell.value
-            
-            # 🔄 NORMALISATION DU CODE EXCEL EN ENTIER
-            try:
-                if code_raw is None or str(code_raw).strip() == '':
-                    continue
-                # Gère "24011624", 24011624, 24011624.0, etc.
-                code_int = int(float(str(code_raw).strip()))
-            except (ValueError, TypeError):
-                unmatched_codes.append(str(code_raw))
-                continue
-            
-            # 🔍 RECHERCHE DANS LE DICTIONNAIRE
-            if code_int in notes_etudiants:
-                note_value = notes_etudiants[code_int]
-                try:
-                    if ',' in str(note_value):
-                        updates_to_apply.append((note_cell, float(str(note_value).replace(',', '.')), numbers.FORMAT_NUMBER_00))
-                    else:
-                        updates_to_apply.append((note_cell, int(note_value) if '.' not in str(note_value) else float(note_value), None))
-                    matched_count += 1
-                except ValueError:
-                    pass
+        # On commence à la ligne juste après les en-têtes
+        start_row = header_row_idx + 1
 
-        # 📊 FEEDBACK
-        if matched_count == 0:
-            st.warning("⚠️ Aucune note transférée ! Vérifiez les codes.")
-        else:
-            st.success(f"✅ {matched_count} notes transférées avec succès !")
-        
-        if len(unmatched_codes) > 0 and len(unmatched_codes) < 10:
-            st.info(f"ℹ️ Codes non reconnus : {unmatched_codes[:5]}...")
-        
-        # Application des mises à jour
-        for cell, value, fmt in updates_to_apply:
-            cell.value = value
-            if fmt:
-                cell.number_format = fmt
-        
-        wb.close()
-        
-        # Sauvegarde
+        for row in ws.iter_rows(min_row=start_row, max_col=max(code_col_idx, note_col_idx)):
+            code_cell = row[code_col_idx - 1]
+            note_cell = row[note_col_idx - 1]
+            
+            if code_cell.value is None:
+                continue
+
+            # --- CORRECTION MAJEURE ICI ---
+            # Conversion du code Excel en TEXTE pour la comparaison
+            excel_code_key = str(code_cell.value).strip()
+
+            # Recherche dans le dictionnaire
+            if excel_code_key in notes_dict:
+                final_note = notes_dict[excel_code_key]
+                
+                # Écriture dans Excel
+                note_cell.value = final_note
+                matched_count += 1
+
+        wb.close() # Important de fermer avant de sauvegarder si on recharge
+
+        # 5. Sauvegarde
         output = io.BytesIO()
-        wb = load_workbook(filename=xls_file)
         wb.save(output)
-        wb.close()
         output.seek(0)
-        
-        return output, len(anomalies)
+
+        return output, anomalies_count, matched_count, len(notes_dict)
 
     except Exception as e:
-        st.error(f"Erreur traitement : {str(e)}")
-        return None, None
-
+        st.error(f"Erreur technique : {str(e)}")
+        return None, 0, 0, 0
 
 # =============================================================================
 # INTERFACE UTILISATEUR
 # =============================================================================
 
-st.title("🛠️ Outils pour AMC")
+st.title("🛠️ Transfert des Notes AMC vers Excel")
 
-section = st.sidebar.radio("📋 Sections", ["ETUDIANTS", "STATISTIQUES", "NOTES"])
+tab1, tab2 = st.tabs(["📤 Transfert de Notes", "ℹ️ Aide"])
 
-# =============================================================================
-# ONGLET ETUDIANTS
-# =============================================================================
-if section == "ETUDIANTS":
-    st.header("👨‍🎓 Liste des étudiants")
-    st.info("Téléchargez le fichier Excel administration pour générer la liste CSV AMC")
-    
-    uploaded_file = st.file_uploader("📁 Fichier Excel", type="xlsx", key="excel_uploader")
-    
-    if uploaded_file is not None:
-        with st.spinner("Traitement..."):
-            xls, liste = process_excel(uploaded_file)
-            
-            if xls is not None:
-                st.success(f"✅ {len(liste)} étudiants trouvés")
-                
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.write("📋 Aperçu Excel:")
-                    st.dataframe(xls.head(), use_container_width=True)
-                with col2:
-                    st.write("📋 Format AMC:")
-                    st.dataframe(liste.head(), use_container_width=True)
-                
-                csv_data = liste.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
-                st.download_button(
-                    label="📥 Télécharger CSV AMC",
-                    data=csv_data,
-                    file_name="liste_etudiants.csv",
-                    mime="text/csv"
-                )
-
-# =============================================================================
-# ONGLET STATISTIQUES
-# =============================================================================
-elif section == "STATISTIQUES":
-    st.header("📊 Statistiques des notes")
-    st.info("Analysez la distribution des notes AMC")
-    
-    uploaded_csv = st.file_uploader("📁 Fichier CSV", type="csv", key="csv_stats")
-    
-    if uploaded_csv is not None:
-        with st.spinner("Analyse..."):
-            csv_clean, csv_nones = process_csv(uploaded_csv)
-            
-            if csv_clean is not None:
-                effectifs = csv_clean['Note'].value_counts().sort_index().reset_index()
-                effectifs.columns = ['Valeur', 'Effectif']
-                
-                fig = px.bar(effectifs, x='Valeur', y='Effectif', text_auto=True)
-                fig.update_layout(xaxis=dict(tickmode='linear', tick0=0, dtick=1), height=400)
-                st.plotly_chart(fig, use_container_width=True)
-                
-                total = len(csv_clean)
-                valides = (csv_clean['Note'] >= 10).sum()
-                
-                col1, col2, col3, col4 = st.columns(4)
-                col1.metric("Présents", total)
-                col2.metric("Validés", valides)
-                col3.metric("Taux réussite", f"{round(valides/total*100, 1)}%")
-                col4.metric("Non identifiés", len(csv_nones))
-
-# =============================================================================
-# ONGLET NOTES
-# =============================================================================
-elif section == "NOTES":
-    st.header("✍️ Transfert des notes")
+with tab1:
+    st.subheader("1. Configuration")
     
     col1, col2 = st.columns(2)
     with col1:
-        st.info("📄 **Fichier Excel administration**\n\nContient la colonne `Code` au format texte")
-        xls_file = st.file_uploader("📁 Excel admin", type="xlsx", key="excel_notes")
+        xls_file = st.file_uploader("📄 Fichier Excel (Liste Admin)", type=['xlsx', 'xls'])
     with col2:
-        st.info("📄 **Fichier CSV AMC**\n\nContient la colonne `A:Code` au format numérique")
-        csv_file = st.file_uploader("📁 CSV AMC", type="csv", key="csv_notes")
-    
-    if xls_file is not None and csv_file is not None:
-        add_notes = st.slider("➕ Points bonus", 0.0, 5.0, 0.0, 0.5)
-        
-        if st.button("🚀 Transférer les notes", type="primary"):
+        csv_file = st.file_uploader("📄 Fichier CSV (Résultats AMC)", type=['csv'])
+
+    add_notes = st.number_input("➕ Ajouter des points (Bonus)", min_value=0.0, max_value=5.0, value=0.0, step=0.5)
+
+    if st.button("🚀 Lancer le transfert", type="primary", disabled=not (xls_file and csv_file)):
+        with st.spinner("Traitement en cours..."):
+            # Reset des fichiers pour lecture
             xls_file.seek(0)
             csv_file.seek(0)
             
-            with st.spinner("Transfert en cours..."):
-                result, nb_none = process_csv2excel(xls_file, csv_file, add_notes)
+            result_file, anomalies, matched, total_notes = process_csv2excel(xls_file, csv_file, add_notes)
+            
+            if result_file:
+                st.success(f"✅ Succès ! {matched} notes transférées sur {total_notes} disponibles.")
+                if anomalies > 0:
+                    st.warning(f"⚠️ {anomalies} étudiants ignorés (Code = NONE).")
                 
-                if result is not None:
-                    st.download_button(
-                        label="📥 Télécharger Excel avec notes",
-                        data=result.getvalue(),
-                        file_name="notes_transferees.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                    )
-                    if nb_none > 0:
-                        st.warning(f"⚠️ {nb_none} étudiants non identifiés")
+                st.download_button(
+                    label="📥 Télécharger le fichier Excel final",
+                    data=result_file,
+                    file_name="notes_transferees.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+            else:
+                st.error("❌ Le transfert a échoué.")
+
+with tab2:
+    st.markdown("""
+    ### Comment ça marche ?
+    1. **Fichier Excel** : Doit contenir une colonne nommée `Code` et une colonne `Note`.
+    2. **Fichier CSV** : Doit être l'export standard d'AMC (contient `A:Code` et `Note`).
+    3. **Correspondance** : Le script compare le `Code` Excel avec le `A:Code` du CSV.
+    
+    ### Pourquoi cela ne marchait pas avant ?
+    Souvent, Excel stocke les codes comme du **Texte** ("123") tandis que le CSV les donne en **Nombre** (123). 
+    Cette version du script force la conversion en texte pour les deux, garantissant la correspondance.
+    """)
